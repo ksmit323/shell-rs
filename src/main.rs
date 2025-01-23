@@ -123,12 +123,20 @@ fn parse_arguments(input: &str) -> Vec<String> {
                     }
                 }
             } else {
-                current_arg.push('\\');
+                // Non-quoted escape: Add character without backslash
                 current_arg.push(c);
             }
             escape_next = false;
-        } else if c == '\\' && in_double {
-            escape_next = true;
+        } else if c == '\\' {
+            if in_double {
+                escape_next = true;
+            } else if !in_single {
+                // Handle backslash in non-quoted context
+                escape_next = true;
+            } else {
+                // In single quotes, backslash is literal
+                current_arg.push(c);
+            }
         } else {
             match c {
                 '\'' => {
