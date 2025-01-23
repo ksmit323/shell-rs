@@ -42,31 +42,17 @@ fn read_input() -> String {
 }
 
 fn cat_files(input: &str) {
-    let files: Vec<&str> = input
-        .split('\'')
-        .enumerate()
-        .filter(|(i, _)| i % 2 == 1) // Select parts inside quotes (odd indices)
-        .map(|(_, part)| part.trim())
-        .filter(|&x| !x.is_empty()) 
-        .collect();
-    
+    let files = parse_arguments(input);
     for file in files {
-        if let Ok(content) = std::fs::read_to_string(file) {
+        if let Ok(content) = std::fs::read_to_string(&file) {
             print!("{}", content);
         }
     }
 }
 
 fn echo_input(input: &str) {
-    if input.contains('\'') {
-        let parts: Vec<&str> = input.split('\'')
-            .filter(|&x| !x.is_empty())
-            .collect();
-        println!("{}", parts.join(""));
-    } else {
-        let words: Vec<&str> = input.split_whitespace().collect();
-        println!("{}", words.join(" "));
-    }
+    let args = parse_arguments(input);
+    println!("{}", args.join(" "));
 }
 
 fn execute_command(command: &str, args: &[&str], paths: &[String]) {
@@ -117,4 +103,62 @@ fn change_directory(new_working_directory: &str) {
     if let Err(_) = env::set_current_dir(path) {
         println!("cd: {}: No such file or directory", new_working_directory);
     }
+}
+
+fn parse_arguments(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current_arg = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape_next = false;
+
+    for c in input.chars() {
+        if escape_next {
+            if in_double {
+                match c {
+                    '\\' | '"' | '$' | '`' | '\n' => current_arg.push(c),
+                    _ => {
+                        current_arg.push('\\');
+                        current_arg.push(c);
+                    }
+                }
+            } else {
+                current_arg.push('\\');
+                current_arg.push(c);
+            }
+            escape_next = false;
+        } else if c == '\\' && in_double {
+            escape_next = true;
+        } else {
+            match c {
+                '\'' => {
+                    if !in_double {
+                        in_single = !in_single;
+                    } else {
+                        current_arg.push(c);
+                    }
+                }
+                '"' => {
+                    if !in_single {
+                        in_double = !in_double;
+                    } else {
+                        current_arg.push(c);
+                    }
+                }
+                ' ' | '\t' | '\n' if !in_single && !in_double => {
+                    if !current_arg.is_empty() {
+                        args.push(current_arg);
+                        current_arg = String::new();
+                    }
+                }
+                _ => current_arg.push(c),
+            }
+        }
+    }
+
+    if !current_arg.is_empty() {
+        args.push(current_arg);
+    }
+
+    args
 }

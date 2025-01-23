@@ -1,0 +1,1 @@
+- Add the "~/home" feature where the squiggly takes you to a specific directory
