@@ -1,6 +1,6 @@
 # shell-rs
 
-A lightweight command-line shell written in Rust. Supports built-in commands, file operations, custom executable handling, autocompletion, I/O redirection, and proper quoting. Built as an educational project to demonstrate shell fundamentals.
+A lightweight command-line shell written in Rust. Supports built-in commands, file operations, custom executable handling, autocompletion, I/O redirection, and proper quoting.
 
 ## Features
 
