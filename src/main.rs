@@ -1,6 +1,7 @@
 use std::env;
 #[allow(unused_imports)]
 use std::io::{self, Write};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{exit, Command};
 
@@ -13,22 +14,22 @@ fn main() {
 
     loop {
         let input = read_input();
-        let args: Vec<&str> = input.split_whitespace().collect();
-        if args.is_empty() {
+        let parsed_args = parse_arguments(&input);
+        if parsed_args.is_empty() {
             continue;
         }
         
-        match args[0] {
-            "cat" => cat_files(&input[4..]),
-            "cd" => change_directory(args[1]),
+        let command = &parsed_args[0];
+        let args = &parsed_args[1..];
+        
+        match command.as_str() {
+            "cat" => cat_files(args),
+            "cd" => change_directory(args.first().map(String::as_str).unwrap_or("")),
             "exit" => exit(0),
-            "echo" => echo_input(&input[5..]),
+            "echo" => echo_input(args),
             "pwd" => print_working_directory(),
-            "type" => handle_type_command(args[1], &paths),
-            command if command.starts_with("custom_exe") => {
-                execute_command(command, &args[1..], &paths)
-            }
-            command => println!("{}: command not found", command),
+            "type" => handle_type_command(args.first().map(String::as_str).unwrap_or(""), &paths),
+            _ => execute_command(command, &paths, args),
         }
     }
 }
@@ -41,26 +42,27 @@ fn read_input() -> String {
     input.trim().to_string()
 }
 
-fn cat_files(input: &str) {
-    let files = parse_arguments(input);
+fn cat_files(files: &[String]) {
     for file in files {
-        if let Ok(content) = std::fs::read_to_string(&file) {
+        if let Ok(content) = std::fs::read_to_string(file) {
             print!("{}", content);
         }
     }
 }
 
-fn echo_input(input: &str) {
-    let args = parse_arguments(input);
+fn echo_input(args: &[String]) {
     println!("{}", args.join(" "));
 }
 
-fn execute_command(command: &str, args: &[&str], paths: &[String]) {
-    if let Some(_command_path) = find_command(command, paths) {
-        Command::new(command)
+fn execute_command(command: &str, paths: &Vec<String>, args: &[String]) {
+    if let Some(command_path) = find_command(command, &paths) {    
+        Command::new(&command_path)
+            .arg0(command)
             .args(args)
             .status()
-            .expect("Failed to execute command");
+            .unwrap_or_else(|_| panic!("Failed to execute: {}", command_path));
+    } else {
+        println!("{}: command not found", command);
     }
 }
 
@@ -80,10 +82,19 @@ fn is_builtin(command: &str) -> bool {
 }
 
 fn find_command(command: &str, paths: &[String]) -> Option<String> {
-    for path in paths {
-        let full_path = format!("{}/{}", path, command);
-        if Path::new(&full_path).exists() {
-            return Some(full_path);
+    if command.contains('/') {
+        let path = Path::new(command);
+        return if path.exists() {
+            Some(command.to_string())
+        } else {
+            None
+        };
+    }
+    
+    for path_dir in paths {
+        let candidate = Path::new(path_dir).join(command);
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().into_owned());
         }
     }
     None
