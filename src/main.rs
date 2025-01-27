@@ -20,39 +20,43 @@ fn main() {
             continue;
         }
 
-        let command = &parsed_args[0];
+        let command = &parsed_args[0].clone();
         let args = parsed_args[1..].to_vec();
 
-        let (processed_args, stdout_redir) = process_redirections(args);
+        let (processed_args, stdout_redir, stderr_redir) = process_redirections(args);
 
         match command.as_str() {
             // "cat" => {
             //     let output = cat_files(&processed_args);
             //     handle_output(output, &stdout_redir);
             // }
-            "cd" => change_directory(processed_args.first().map(String::as_str).unwrap_or("")),
+            "cd" => {
+                let output = change_directory(processed_args.first().map(String::as_str).unwrap_or(""));
+                handle_redirections(output, &stdout_redir, &stderr_redir);
+            }
             "exit" => exit(0),
             "echo" => {
                 let output = echo_input(&processed_args);
-                handle_output(output, &stdout_redir);
+                handle_redirections(output, &stdout_redir, &stderr_redir);
             }
             "pwd" => {
                 let output = print_working_directory();
-                handle_output(output, &stdout_redir);
+                handle_redirections(output, &stdout_redir, &stderr_redir);
             }
             "type" => {
                 let cmd = processed_args.first().map(String::as_str).unwrap_or("");
                 let output = handle_type_command(cmd, &paths);
-                handle_output(output, &stdout_redir);
+                handle_redirections(output, &stdout_redir, &stderr_redir);
             }
-            _ => execute_command(&command, &paths, &processed_args, &stdout_redir),
+            _ => execute_command(&command, &paths, &processed_args, &stdout_redir, &stderr_redir),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum RedirectionType {
     Stdout,
+    Stderr,
 }
 
 #[derive(Debug)]
@@ -61,30 +65,53 @@ struct Redirection {
     filename: String,
 }
 
-fn process_redirections(args: Vec<String>) -> (Vec<String>, Option<Redirection>) {
+struct CommandOutput {
+    stdout: String,
+    stderr: String,
+}
+
+
+fn process_redirections(
+    args: Vec<String>,
+) -> (Vec<String>, Option<Redirection>, Option<Redirection>) {
     let mut processed_args = Vec::new();
     let mut stdout_redir = None;
-
+    let mut stderr_redir = None;
+    
     let mut i = 0;
     while i < args.len() {
-        if args[i] == ">" || args[i] == "1>" {
-            if i + 1 < args.len() {
-                stdout_redir = Some(Redirection {
-                    ty: RedirectionType::Stdout,
-                    filename: args[i + 1].clone(),
-                });
-                i += 2;
-            } else {
+        match args[i].as_str() {
+            ">" | "1>" => {
+                if i + 1 < args.len() {
+                    stdout_redir = Some(Redirection {
+                        ty: RedirectionType::Stdout,
+                        filename: args[i + 1].clone(),
+                    });
+                    i += 2;
+                } else {
+                    processed_args.push(args[i].clone());
+                    i += 1;
+                }
+            }
+            "2>" => {
+                if i + 1 < args.len() {
+                    stderr_redir = Some(Redirection {
+                        ty: RedirectionType::Stderr,
+                        filename: args[i + 1].clone(),
+                    });
+                    i += 2;
+                } else {
+                    processed_args.push(args[i].clone());
+                    i += 1;
+                }
+            }
+            _ => {
                 processed_args.push(args[i].clone());
                 i += 1;
             }
-        } else {
-            processed_args.push(args[i].clone());
-            i += 1;
         }
     }
-
-    (processed_args, stdout_redir)
+    (processed_args, stdout_redir, stderr_redir)
 }
 
 fn read_input() -> String {
@@ -106,8 +133,11 @@ fn cat_files(files: &[String]) -> String {
     output
 }
 
-fn echo_input(args: &[String]) -> String {
-    args.join(" ") + "\n"
+fn echo_input(args: &[String]) -> CommandOutput {
+    CommandOutput {
+        stdout: args.join(" ") + "\n",
+        stderr: String::new(),
+    }
 }
 
 fn execute_command(
@@ -115,39 +145,54 @@ fn execute_command(
     paths: &[String],
     args: &[String],
     stdout_redir: &Option<Redirection>,
+    stderr_redir: &Option<Redirection>,
 ) {
     if let Some(command_path) = find_command(command, paths) {
         let mut cmd = Command::new(&command_path);
         cmd.arg0(command);
         cmd.args(args);
 
+        // Redirect stdout
         if let Some(redir) = stdout_redir {
-            match File::create(&redir.filename) {
-                Ok(file) => {
-                    cmd.stdout(file);
-                }
-                Err(e) => {
-                    eprintln!("Error creating file {}: {}", redir.filename, e);
-                    return;
-                }
+            if let Ok(file) = File::create(&redir.filename) {
+                cmd.stdout(file);
+            } else {
+                eprintln!("Failed to create file: {}", redir.filename);
+                return;
             }
         }
 
-        let status = cmd
-            .status()
-            .unwrap_or_else(|_| panic!("Failed to execute: {}", command_path));
+        // Redirect stderr
+        if let Some(redir) = stderr_redir {
+            if let Ok(file) = File::create(&redir.filename) {
+                cmd.stderr(file);
+            } else {
+                eprintln!("Failed to create file: {}", redir.filename);
+                return;
+            }
+        }
+
+        // Execute the command
+        let _status = cmd.status().unwrap_or_else(|e| {
+            eprintln!("Failed to execute command: {}", e);
+            std::process::exit(1)
+        });
     } else {
-        println!("{}: command not found", command);
+        eprintln!("{}: command not found", command);
     }
 }
 
-fn handle_type_command(command: &str, paths: &[String]) -> String {
-    if is_builtin(command) {
+fn handle_type_command(command: &str, paths: &[String]) -> CommandOutput {
+    let output = if is_builtin(command) {
         format!("{} is a shell builtin\n", command)
-    } else if let Some(command_path) = find_command(command, &paths) {
+    } else if let Some(command_path) = find_command(command, paths) {
         format!("{} is {}\n", command, command_path)
     } else {
         format!("{}: not found\n", command)
+    };
+    CommandOutput {
+        stdout: output,
+        stderr: String::new(),
     }
 }
 
@@ -175,19 +220,29 @@ fn find_command(command: &str, paths: &[String]) -> Option<String> {
     None
 }
 
-fn print_working_directory() -> String {
-    format!("{}\n", env::current_dir().unwrap().display())
+fn print_working_directory() -> CommandOutput {
+    CommandOutput {
+        stdout: format!("{}\n", env::current_dir().unwrap().display()),
+        stderr: String::new(),
+    }
 }
 
-fn change_directory(new_working_directory: &str) {
+fn change_directory(new_working_directory: &str) -> CommandOutput {
     let path = if new_working_directory == "~" {
-        env::home_dir().unwrap_or_default()
+        env::home_dir().unwrap_or_else(|| Path::new("").to_path_buf())
     } else {
         Path::new(new_working_directory).to_path_buf()
     };
 
-    if let Err(_) = env::set_current_dir(path) {
-        println!("cd: {}: No such file or directory", new_working_directory);
+    match env::set_current_dir(&path) {
+        Ok(()) => CommandOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+        Err(_) => CommandOutput {
+            stdout: String::new(),
+            stderr: format!("cd: {}: No such file or directory\n", new_working_directory),
+        },
     }
 }
 
@@ -199,6 +254,28 @@ fn handle_output(output: String, stdout_redir: &Option<Redirection>) {
     } else {
         print!("{}", output);
         io::stdout().flush().unwrap();
+    }
+}   
+
+fn handle_redirections(output: CommandOutput, stdout_redir: &Option<Redirection>, stderr_redir: &Option<Redirection>) {
+    // Handle stdout
+    if let Some(redir) = stdout_redir {
+        if let Err(e) = std::fs::write(&redir.filename, output.stdout) {
+            eprintln!("Error writing to {}: {}", redir.filename, e);
+        }
+    } else {
+        print!("{}", output.stdout);
+        io::stdout().flush().unwrap();
+    }
+
+    // Handle stderr
+    if let Some(redir) = stderr_redir {
+        if let Err(e) = std::fs::write(&redir.filename, output.stderr) {
+            eprintln!("Error writing to {}: {}", redir.filename, e);
+        }
+    } else {
+        eprint!("{}", output.stderr);
+        io::stderr().flush().unwrap();
     }
 }
 
