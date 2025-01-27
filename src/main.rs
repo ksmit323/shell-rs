@@ -1,23 +1,17 @@
 use std::env;
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::io::Read;
-#[allow(unused_imports)]
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{exit, Command};
 
 use rustyline::completion::{Completer, Pair};
-use rustyline::config::Configurer;
-use rustyline::{Editor, Context, Result as RustylineResult};
 use rustyline::error::ReadlineError;
+use rustyline::{Context, Editor, Result as RustylineResult};
 
-use rustyline::Helper;
+use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::highlight::Highlighter;
-
+use rustyline::Helper;
 
 fn main() {
     let paths: Vec<String> = env::var("PATH")
@@ -29,8 +23,9 @@ fn main() {
     let mut rl = Editor::with_config(
         rustyline::Config::builder()
             .completion_type(rustyline::CompletionType::List)
-            .build()
-    ).expect("Should create readline instance");
+            .build(),
+    )
+    .expect("Should create readline instance");
     rl.set_helper(Some(BuiltInCompleter::new()));
 
     loop {
@@ -57,10 +52,6 @@ fn main() {
         let (processed_args, stdout_redir, stderr_redir) = process_redirections(args);
 
         match command.as_str() {
-            // "cat" => {
-            //     let output = cat_files(&processed_args);
-            //     handle_output(output, &stdout_redir);
-            // }
             "cd" => {
                 let output =
                     change_directory(processed_args.first().map(String::as_str).unwrap_or(""));
@@ -91,8 +82,6 @@ fn main() {
     }
 }
 
-const COMPLETABLE_BUILTINS: &[&str] = &["echo", "exit"];
-
 #[derive(Debug, PartialEq)]
 enum RedirectionType {
     Stdout,
@@ -117,8 +106,10 @@ struct CommandOutput {
     stderr: String,
 }
 
-struct BuiltInCompleter{
+struct BuiltInCompleter {
     paths: Vec<String>,
+    last_prefix: String,
+    tab_count: usize,
 }
 
 impl BuiltInCompleter {
@@ -128,12 +119,16 @@ impl BuiltInCompleter {
             .split(':')
             .map(String::from)
             .collect();
-        Self { paths }
+        Self {
+            paths,
+            last_prefix: String::new(),
+            tab_count: 0,
+        }
     }
-    
+
     fn find_executables(&self, prefix: &str) -> Vec<String> {
         let mut matches = Vec::new();
-        
+
         for path_dir in &self.paths {
             if let Ok(entries) = std::fs::read_dir(path_dir) {
                 for entry in entries.filter_map(Result::ok) {
@@ -151,7 +146,8 @@ impl BuiltInCompleter {
                 }
             }
         }
-        
+
+        matches.sort(); // Sort alphabetically
         matches
     }
 }
@@ -167,12 +163,12 @@ impl Completer for BuiltInCompleter {
     ) -> RustylineResult<(usize, Vec<Pair>)> {
         let mut completions = Vec::new();
         let prefix = &line[..pos];
-        
+
         // Only complete first token
-        if let Some(first_space) = prefix.find(' ') {
+        if let Some(_first_space) = prefix.find(' ') {
             return Ok((0, vec![]));
         }
-        
+
         // Try builtin commands first
         for cmd in ["echo", "exit"] {
             if cmd.starts_with(prefix) {
@@ -182,23 +178,51 @@ impl Completer for BuiltInCompleter {
                 });
             }
         }
-        
+
         // Then try executables in PATH
-        for exe in self.find_executables(prefix) {
+        let mut exe_matches = self.find_executables(prefix);
+
+        // No matches: ring bell and return original
+        if exe_matches.is_empty() && completions.is_empty() {
+            print!("\x07");
+            io::stdout().flush().unwrap();
+            return Ok((0, vec![]));
+        }
+
+        // Single match: return it with a space
+        if exe_matches.len() == 1 {
             completions.push(Pair {
-                display: exe.clone(),
-                replacement: format!("{} ", exe),
+                display: exe_matches[0].clone(),
+                replacement: format!("{} ", exe_matches[0]),
             });
         }
-        
+        // Single builtin match: already handled above
+        else if completions.len() == 1 {
+            // Keep the existing completion
+        }
+        // Multiple matches: show all and ring bell
+        else if exe_matches.len() > 1 {
+            exe_matches.sort();
+            println!("\n{}", exe_matches.join("  "));
+            print!("\x07$ {}", prefix);
+            io::stdout().flush().unwrap();
+            return Ok((0, vec![]));
+        }
+
         Ok((0, completions))
     }
 }
 
 impl Helper for BuiltInCompleter {}
+
 impl Hinter for BuiltInCompleter {
     type Hint = String;
+
+    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
+        None
+    }
 }
+
 impl Highlighter for BuiltInCompleter {}
 impl Validator for BuiltInCompleter {}
 
@@ -213,7 +237,7 @@ fn process_redirections(
     while i < args.len() {
         match args[i].as_str() {
             // Stdout truncate
-            ">" | "1>" => handle_redir(
+            ">" | "1>" => parse_redirection_operator(
                 &mut stdout_redir,
                 &args,
                 &mut i,
@@ -221,7 +245,7 @@ fn process_redirections(
                 RedirectionMode::Truncate,
             ),
             // Stdout append
-            ">>" | "1>>" => handle_redir(
+            ">>" | "1>>" => parse_redirection_operator(
                 &mut stdout_redir,
                 &args,
                 &mut i,
@@ -229,7 +253,7 @@ fn process_redirections(
                 RedirectionMode::Append,
             ),
             // Stderr truncate
-            "2>" => handle_redir(
+            "2>" => parse_redirection_operator(
                 &mut stderr_redir,
                 &args,
                 &mut i,
@@ -237,7 +261,7 @@ fn process_redirections(
                 RedirectionMode::Truncate,
             ),
             // Stderr append
-            "2>>" => handle_redir(
+            "2>>" => parse_redirection_operator(
                 &mut stderr_redir,
                 &args,
                 &mut i,
@@ -254,7 +278,7 @@ fn process_redirections(
     (processed_args, stdout_redir, stderr_redir)
 }
 
-fn handle_redir(
+fn parse_redirection_operator(
     target: &mut Option<Redirection>,
     args: &[String],
     i: &mut usize,
@@ -274,54 +298,6 @@ fn handle_redir(
         *i += 1;
     }
 }
-
-fn read_input() -> String {
-    print!("$ ");
-    io::stdout().flush().unwrap();
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    
-    // Process input for tab completion before trimming
-    process_tab_completion(&mut input);
-    
-    input.trim().to_string()
-}
-
-fn process_tab_completion(input: &mut String) {
-    if input.contains('\t') {
-        let partial = input.trim_end_matches(|c| c == '\t' || c == '\n' || c == '\r');
-        let completed = match find_completion(partial) {
-            Some(cmd) => format!("{} ", cmd),
-            None => partial.to_string(),
-        };
-        *input = completed + "\n";
-    }
-}
-
-fn find_completion(partial: &str) -> Option<&'static str> {
-    let matches: Vec<&str> = COMPLETABLE_BUILTINS
-        .iter()
-        .filter(|&&cmd| cmd.starts_with(partial))
-        .copied()
-        .collect();
-    
-    if matches.len() == 1 {
-        Some(matches[0])
-    } else {
-        None
-    }
-}
-
-// fn cat_files(files: &[String]) -> String {
-//     let mut output = String::new();
-//     for file in files {
-//         match std::fs::read_to_string(file) {
-//             Ok(content) => output.push_str(&content),
-//             Err(e) => output.push_str(&format!("cat: {}: {}\n", file, e)),
-//         }
-//     }
-//     output
-// }
 
 fn echo_input(args: &[String]) -> CommandOutput {
     CommandOutput {
@@ -450,17 +426,6 @@ fn change_directory(new_working_directory: &str) -> CommandOutput {
             stdout: String::new(),
             stderr: format!("cd: {}: No such file or directory\n", new_working_directory),
         },
-    }
-}
-
-fn handle_output(output: String, stdout_redir: &Option<Redirection>) {
-    if let Some(redir) = stdout_redir {
-        if let Err(e) = std::fs::write(&redir.filename, output) {
-            eprintln!("Error writing to {}: {}", redir.filename, e);
-        }
-    } else {
-        print!("{}", output);
-        io::stdout().flush().unwrap();
     }
 }
 
