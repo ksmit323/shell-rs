@@ -31,7 +31,7 @@ fn main() {
             .completion_type(rustyline::CompletionType::List)
             .build()
     ).expect("Should create readline instance");
-    rl.set_helper(Some(BuiltInCompleter));
+    rl.set_helper(Some(BuiltInCompleter::new()));
 
     loop {
         let input = match rl.readline("$ ") {
@@ -117,7 +117,44 @@ struct CommandOutput {
     stderr: String,
 }
 
-struct BuiltInCompleter;
+struct BuiltInCompleter{
+    paths: Vec<String>,
+}
+
+impl BuiltInCompleter {
+    fn new() -> Self {
+        let paths = env::var("PATH")
+            .unwrap_or_default()
+            .split(':')
+            .map(String::from)
+            .collect();
+        Self { paths }
+    }
+    
+    fn find_executables(&self, prefix: &str) -> Vec<String> {
+        let mut matches = Vec::new();
+        
+        for path_dir in &self.paths {
+            if let Ok(entries) = std::fs::read_dir(path_dir) {
+                for entry in entries.filter_map(Result::ok) {
+                    if let Ok(file_name) = entry.file_name().into_string() {
+                        if file_name.starts_with(prefix) {
+                            // Check if the file is executable
+                            if let Ok(metadata) = entry.metadata() {
+                                use std::os::unix::fs::PermissionsExt;
+                                if metadata.permissions().mode() & 0o111 != 0 {
+                                    matches.push(file_name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        matches
+    }
+}
 
 impl Completer for BuiltInCompleter {
     type Candidate = Pair;
@@ -135,7 +172,8 @@ impl Completer for BuiltInCompleter {
         if let Some(first_space) = prefix.find(' ') {
             return Ok((0, vec![]));
         }
-
+        
+        // Try builtin commands first
         for cmd in ["echo", "exit"] {
             if cmd.starts_with(prefix) {
                 completions.push(Pair {
@@ -143,6 +181,14 @@ impl Completer for BuiltInCompleter {
                     replacement: format!("{} ", cmd),
                 });
             }
+        }
+        
+        // Then try executables in PATH
+        for exe in self.find_executables(prefix) {
+            completions.push(Pair {
+                display: exe.clone(),
+                replacement: format!("{} ", exe),
+            });
         }
         
         Ok((0, completions))
