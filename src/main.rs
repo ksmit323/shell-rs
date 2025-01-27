@@ -1,11 +1,23 @@
 use std::env;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::io::Read;
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{exit, Command};
+
+use rustyline::completion::{Completer, Pair};
+use rustyline::config::Configurer;
+use rustyline::{Editor, Context, Result as RustylineResult};
+use rustyline::error::ReadlineError;
+
+use rustyline::Helper;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::highlight::Highlighter;
+
 
 fn main() {
     let paths: Vec<String> = env::var("PATH")
@@ -14,8 +26,26 @@ fn main() {
         .map(String::from)
         .collect();
 
+    let mut rl = Editor::with_config(
+        rustyline::Config::builder()
+            .completion_type(rustyline::CompletionType::List)
+            .build()
+    ).expect("Should create readline instance");
+    rl.set_helper(Some(BuiltInCompleter));
+
     loop {
-        let input = read_input();
+        let input = match rl.readline("$ ") {
+            Ok(line) => {
+                rl.add_history_entry(&line);
+                line
+            }
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => break,
+            Err(err) => {
+                eprintln!("Error: {:?}", err);
+                break;
+            }
+        };
+
         let parsed_args = parse_arguments(&input);
         if parsed_args.is_empty() {
             continue;
@@ -61,6 +91,8 @@ fn main() {
     }
 }
 
+const COMPLETABLE_BUILTINS: &[&str] = &["echo", "exit"];
+
 #[derive(Debug, PartialEq)]
 enum RedirectionType {
     Stdout,
@@ -84,6 +116,45 @@ struct CommandOutput {
     stdout: String,
     stderr: String,
 }
+
+struct BuiltInCompleter;
+
+impl Completer for BuiltInCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> RustylineResult<(usize, Vec<Pair>)> {
+        let mut completions = Vec::new();
+        let prefix = &line[..pos];
+        
+        // Only complete first token
+        if let Some(first_space) = prefix.find(' ') {
+            return Ok((0, vec![]));
+        }
+
+        for cmd in ["echo", "exit"] {
+            if cmd.starts_with(prefix) {
+                completions.push(Pair {
+                    display: cmd.to_string(),
+                    replacement: format!("{} ", cmd),
+                });
+            }
+        }
+        
+        Ok((0, completions))
+    }
+}
+
+impl Helper for BuiltInCompleter {}
+impl Hinter for BuiltInCompleter {
+    type Hint = String;
+}
+impl Highlighter for BuiltInCompleter {}
+impl Validator for BuiltInCompleter {}
 
 fn process_redirections(
     args: Vec<String>,
@@ -163,19 +234,48 @@ fn read_input() -> String {
     io::stdout().flush().unwrap();
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
+    
+    // Process input for tab completion before trimming
+    process_tab_completion(&mut input);
+    
     input.trim().to_string()
 }
 
-fn cat_files(files: &[String]) -> String {
-    let mut output = String::new();
-    for file in files {
-        match std::fs::read_to_string(file) {
-            Ok(content) => output.push_str(&content),
-            Err(e) => output.push_str(&format!("cat: {}: {}\n", file, e)),
-        }
+fn process_tab_completion(input: &mut String) {
+    if input.contains('\t') {
+        let partial = input.trim_end_matches(|c| c == '\t' || c == '\n' || c == '\r');
+        let completed = match find_completion(partial) {
+            Some(cmd) => format!("{} ", cmd),
+            None => partial.to_string(),
+        };
+        *input = completed + "\n";
     }
-    output
 }
+
+fn find_completion(partial: &str) -> Option<&'static str> {
+    let matches: Vec<&str> = COMPLETABLE_BUILTINS
+        .iter()
+        .filter(|&&cmd| cmd.starts_with(partial))
+        .copied()
+        .collect();
+    
+    if matches.len() == 1 {
+        Some(matches[0])
+    } else {
+        None
+    }
+}
+
+// fn cat_files(files: &[String]) -> String {
+//     let mut output = String::new();
+//     for file in files {
+//         match std::fs::read_to_string(file) {
+//             Ok(content) => output.push_str(&content),
+//             Err(e) => output.push_str(&format!("cat: {}: {}\n", file, e)),
+//         }
+//     }
+//     output
+// }
 
 fn echo_input(args: &[String]) -> CommandOutput {
     CommandOutput {
@@ -192,7 +292,7 @@ fn execute_command(
     stderr_redir: &Option<Redirection>,
 ) {
     use std::fs::OpenOptions;
-    
+
     if let Some(command_path) = find_command(command, paths) {
         let mut cmd = Command::new(&command_path);
         cmd.arg0(command);
