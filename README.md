@@ -1,19 +1,46 @@
 # shell-rs
 
-A lightweight command-line shell written in Rust. Supports built-in commands, file operations, custom executable handling, autocompletion, I/O redirection, and proper quoting.
+A lightweight POSIX-style command-line shell implementation in Rust with modern features and safety guarantees.
 
 ## Features
 
-- Built-in commands: `cd`, `pwd`, `echo`, `type`
-- File operations: `cat`
-- Custom executable handling
-- Path resolution
-- Command autocompletion
-- I/O redirection (`>`, `>>`, `<`, `|`)
-- Proper quote handling (single and double quotes)
-- Simple and readable Rust implementation
+### Core Functionality
+- Command execution with PATH resolution
+- Built-in commands:
+  - `cd`: Directory navigation with tilde expansion
+  - `pwd`: Working directory display
+  - `echo`: Argument expansion with quote handling
+  - `type`: Command type inspection (builtins vs external)
+  - `exit`: Shell termination
+
+### Advanced Functionality
+- I/O Redirection:
+  - Input redirection (`<`)
+  - Output truncation (`>`, `1>`)
+  - Output appending (`>>`, `1>>`)
+  - Error stream redirection (`2>`, `2>>`)
+- Pipeline support (`|`)
+- Quoting mechanisms:
+  - Single quotes (literal strings)
+  - Double quotes (with escape sequence support)
+  - Backslash escaping
+- Autocompletion:
+  - Built-in command suggestions
+  - Executable discovery in PATH
+  - Directory-aware tab completion
+
+### Safety & Reliability
+- Memory-safe implementation leveraging Rust's ownership model
+- Graceful error handling for filesystem operations
+- Proper signal handling for Ctrl-C/Ctrl-D
+- Configurable readline interface
 
 ## Installation
+
+### Prerequisites
+- Rust 1.70+ toolchain
+- Cargo package manager
+- Linux/Unix-like environment
 
 ```bash
 # Clone the repository
@@ -26,17 +53,41 @@ cd shell-rs
 
 ## Usage
 
+### Basic Operations
 ```bash
-$ pwd
-/home/user
-$ echo 'Hello World'
-Hello World
-$ cat 'file.txt'
-Contents of file.txt
-$ cd ~/documents
+$ echo "Hello World" > output.txt
+$ cat < input.txt | wc -l
+$ ls -l | grep Cargo 2> errors.log
 ```
 
-## Built-in Commands
+### Redirection Examples
+```bash
+# Combined output/error redirection
+$ command 1> output.log 2>&1
+
+# Append mode
+$ date >> timestamps.log
+
+# Error stream redirection
+$ compile 2> build_errors.txt
+```
+
+### Quoting Rules
+```bash
+$ echo 'Single quotes $preserve literals'
+$ echo "Double quotes allow $VARIABLE expansions"
+$ echo Escaping\ special\ characters
+```
+
+## Architecture
+
+### Key Components
+- Parser: Handles tokenization with quoted string awareness
+- Command Executor: Manages process forking/execution
+- Redirection Engine: Implements file descriptor management
+- Autocompletion: Integrated with system PATH resolution 
+
+### Built-in Commands
 
 - `cd [directory]` - Change current directory
 - `pwd` - Print working directory
@@ -45,3 +96,6 @@ $ cd ~/documents
 - `cat [file]` - Display file contents
 - `exit` - Exit the shell
 
+### Dependencies
+- rustyline for line editing features
+- Standard library POSIX API bindings
