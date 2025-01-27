@@ -24,10 +24,20 @@ A lightweight POSIX-style command-line shell implementation in Rust with modern 
   - Single quotes (literal strings)
   - Double quotes (with escape sequence support)
   - Backslash escaping
-- Autocompletion:
-  - Built-in command suggestions
-  - Executable discovery in PATH
-  - Directory-aware tab completion
+  
+  ### Autocompletion System
+  - **Multi-stage prefix completion**:
+    - Handles nested executable names with common prefixes
+    - Dynamically extends completion based on longest common prefix (LCP)
+    - Supports iterative refinement through subsequent tab presses
+  - **Advanced matching logic**:
+    - Prioritizes exact matches when available
+    - Automatically completes to maximally unambiguous prefixes
+    - Falls back to list display for disjoint matches
+  - **Path-aware resolution**:
+    - Respects PATH directory order precedence
+    - Handles executables across multiple PATH components
+    - Maintains POSIX-style executable discovery rules
 
 ### Safety & Reliability
 - Memory-safe implementation leveraging Rust's ownership model
