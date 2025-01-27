@@ -1,5 +1,6 @@
 use std::env;
 use std::fs::File;
+use std::fs::OpenOptions;
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
@@ -31,7 +32,8 @@ fn main() {
             //     handle_output(output, &stdout_redir);
             // }
             "cd" => {
-                let output = change_directory(processed_args.first().map(String::as_str).unwrap_or(""));
+                let output =
+                    change_directory(processed_args.first().map(String::as_str).unwrap_or(""));
                 handle_redirections(output, &stdout_redir, &stderr_redir);
             }
             "exit" => exit(0),
@@ -48,7 +50,13 @@ fn main() {
                 let output = handle_type_command(cmd, &paths);
                 handle_redirections(output, &stdout_redir, &stderr_redir);
             }
-            _ => execute_command(&command, &paths, &processed_args, &stdout_redir, &stderr_redir),
+            _ => execute_command(
+                &command,
+                &paths,
+                &processed_args,
+                &stdout_redir,
+                &stderr_redir,
+            ),
         }
     }
 }
@@ -60,8 +68,15 @@ enum RedirectionType {
 }
 
 #[derive(Debug)]
+enum RedirectionMode {
+    Truncate,
+    Append,
+}
+
+#[derive(Debug)]
 struct Redirection {
     ty: RedirectionType,
+    mode: RedirectionMode,
     filename: String,
 }
 
@@ -70,41 +85,49 @@ struct CommandOutput {
     stderr: String,
 }
 
-
 fn process_redirections(
     args: Vec<String>,
 ) -> (Vec<String>, Option<Redirection>, Option<Redirection>) {
     let mut processed_args = Vec::new();
     let mut stdout_redir = None;
     let mut stderr_redir = None;
-    
+
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            ">" | "1>" => {
-                if i + 1 < args.len() {
-                    stdout_redir = Some(Redirection {
-                        ty: RedirectionType::Stdout,
-                        filename: args[i + 1].clone(),
-                    });
-                    i += 2;
-                } else {
-                    processed_args.push(args[i].clone());
-                    i += 1;
-                }
-            }
-            "2>" => {
-                if i + 1 < args.len() {
-                    stderr_redir = Some(Redirection {
-                        ty: RedirectionType::Stderr,
-                        filename: args[i + 1].clone(),
-                    });
-                    i += 2;
-                } else {
-                    processed_args.push(args[i].clone());
-                    i += 1;
-                }
-            }
+            // Stdout truncate
+            ">" | "1>" => handle_redir(
+                &mut stdout_redir,
+                &args,
+                &mut i,
+                RedirectionType::Stdout,
+                RedirectionMode::Truncate,
+            ),
+            // Stdout append
+            ">>" | "1>>" => handle_redir(
+                &mut stdout_redir,
+                &args,
+                &mut i,
+                RedirectionType::Stdout,
+                RedirectionMode::Append,
+            ),
+            // Stderr truncate
+            "2>" => handle_redir(
+                &mut stderr_redir,
+                &args,
+                &mut i,
+                RedirectionType::Stderr,
+                RedirectionMode::Truncate,
+            ),
+            // Stderr append
+            "2>>" => handle_redir(
+                &mut stderr_redir,
+                &args,
+                &mut i,
+                RedirectionType::Stderr,
+                RedirectionMode::Append,
+            ),
+            // Regular argument
             _ => {
                 processed_args.push(args[i].clone());
                 i += 1;
@@ -112,6 +135,27 @@ fn process_redirections(
         }
     }
     (processed_args, stdout_redir, stderr_redir)
+}
+
+fn handle_redir(
+    target: &mut Option<Redirection>,
+    args: &[String],
+    i: &mut usize,
+    ty: RedirectionType,
+    mode: RedirectionMode,
+) {
+    if *i + 1 < args.len() {
+        *target = Some(Redirection {
+            ty,
+            mode,
+            filename: args[*i + 1].clone(),
+        });
+        *i += 2; // Skip operator and filename
+    } else {
+        // Malformed redirection, treat as regular argument
+        target.as_mut().map(|r| r.filename.push_str(&args[*i]));
+        *i += 1;
+    }
 }
 
 fn read_input() -> String {
@@ -147,36 +191,53 @@ fn execute_command(
     stdout_redir: &Option<Redirection>,
     stderr_redir: &Option<Redirection>,
 ) {
+    use std::fs::OpenOptions;
+    
     if let Some(command_path) = find_command(command, paths) {
         let mut cmd = Command::new(&command_path);
         cmd.arg0(command);
         cmd.args(args);
 
-        // Redirect stdout
+        // Handle stdout redirection
         if let Some(redir) = stdout_redir {
-            if let Ok(file) = File::create(&redir.filename) {
-                cmd.stdout(file);
-            } else {
-                eprintln!("Failed to create file: {}", redir.filename);
-                return;
+            match OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(matches!(redir.mode, RedirectionMode::Truncate))
+                .append(matches!(redir.mode, RedirectionMode::Append))
+                .open(&redir.filename)
+            {
+                Ok(file) => {
+                    cmd.stdout(file);
+                }
+                Err(e) => {
+                    eprintln!("Failed to open {}: {}", redir.filename, e);
+                    return;
+                }
             }
         }
 
-        // Redirect stderr
+        // Handle stderr redirection
         if let Some(redir) = stderr_redir {
-            if let Ok(file) = File::create(&redir.filename) {
-                cmd.stderr(file);
-            } else {
-                eprintln!("Failed to create file: {}", redir.filename);
-                return;
+            match OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(matches!(redir.mode, RedirectionMode::Truncate))
+                .append(matches!(redir.mode, RedirectionMode::Append))
+                .open(&redir.filename)
+            {
+                Ok(file) => {
+                    cmd.stderr(file);
+                }
+                Err(e) => {
+                    eprintln!("Failed to open {}: {}", redir.filename, e);
+                    return;
+                }
             }
         }
 
-        // Execute the command
-        let _status = cmd.status().unwrap_or_else(|e| {
-            eprintln!("Failed to execute command: {}", e);
-            std::process::exit(1)
-        });
+        // Execute the command and ignore errors (matching shell behavior)
+        let _ = cmd.status();
     } else {
         eprintln!("{}: command not found", command);
     }
@@ -255,27 +316,56 @@ fn handle_output(output: String, stdout_redir: &Option<Redirection>) {
         print!("{}", output);
         io::stdout().flush().unwrap();
     }
-}   
+}
 
-fn handle_redirections(output: CommandOutput, stdout_redir: &Option<Redirection>, stderr_redir: &Option<Redirection>) {
-    // Handle stdout
+fn handle_redirections(
+    output: CommandOutput,
+    stdout_redir: &Option<Redirection>,
+    stderr_redir: &Option<Redirection>,
+) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    // Handle stdout redirection (including append)
     if let Some(redir) = stdout_redir {
-        if let Err(e) = std::fs::write(&redir.filename, output.stdout) {
-            eprintln!("Error writing to {}: {}", redir.filename, e);
+        match OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(matches!(redir.mode, RedirectionMode::Truncate))
+            .append(matches!(redir.mode, RedirectionMode::Append))
+            .open(&redir.filename)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(output.stdout.as_bytes()) {
+                    eprintln!("Error writing stdout to {}: {}", redir.filename, e);
+                }
+            }
+            Err(e) => eprintln!("Error opening {}: {}", redir.filename, e),
         }
     } else {
         print!("{}", output.stdout);
-        io::stdout().flush().unwrap();
+        let _ = io::stdout().flush();
     }
 
-    // Handle stderr
+    // Handle stderr redirection (including append)
     if let Some(redir) = stderr_redir {
-        if let Err(e) = std::fs::write(&redir.filename, output.stderr) {
-            eprintln!("Error writing to {}: {}", redir.filename, e);
+        match OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(matches!(redir.mode, RedirectionMode::Truncate))
+            .append(matches!(redir.mode, RedirectionMode::Append))
+            .open(&redir.filename)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(output.stderr.as_bytes()) {
+                    eprintln!("Error writing stderr to {}: {}", redir.filename, e);
+                }
+            }
+            Err(e) => eprintln!("Error opening {}: {}", redir.filename, e),
         }
     } else {
         eprint!("{}", output.stderr);
-        io::stderr().flush().unwrap();
+        let _ = io::stderr().flush();
     }
 }
 
